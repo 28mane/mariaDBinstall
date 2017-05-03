@@ -198,3 +198,30 @@
        name: "{{ mariadb_service }}" 
        state: restarted
 
+
+
+
+********************************
+---
+- hosts: all
+  vars:
+    db_file: "{{lookup('file','/home/wipro/girishWork/newMaria/mariaDBOpt/DbSetup.json') | from_json }}"
+  tasks:
+    - name: setting facts
+      set_fact: db_setup="{{db_file.database_setup}}"
+      register: db_setup
+    - name: Printing hostname
+      #debug: msg="{{ansible_hostname}}"
+      set_fact: master_mariadb="{{db_file.master_mariadb}}" slave_mariadb="{{db_file.slave_mariadb}}"
+      register: master_mariadb slave_mariadb
+      template: >
+       src=inventoryV1.j2
+       dest=inventoryV1
+      when: db_setup == "shared"
+    - name: Printing fqdn
+      debug: msg="{{ansible_fqdn}}"
+      when: db_setup == "exclusive"
+
+
+
+
