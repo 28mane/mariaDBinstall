@@ -1,0 +1,299 @@
+---
+- hosts: masterMariadb:slaveMariadb
+  vars:
+     mysql_server_id: "{{ ansible_default_ipv4.address | ipaddr('int') }}"
+     mariadb_my_config: ~/.my.cnf
+     mariadb_service: rh-mariadb101-mariadb
+     mariadb_root_password: Admin@123
+     mariadb_packages:
+      - rh-mariadb101
+      - MySQL-python
+  tasks:
+   - name: server ID
+     become: true
+     debug:
+       msg: "{{ mysql_server_id  }} and  {{ ansible_default_ipv4.address  }}"
+     tags: server_ID
+
+   - name: Install packages
+     become: true
+     package:
+       name: "{{ item }}"
+       state: installed
+     with_items: "{{ mariadb_packages }}"
+     tags: mariadb_packages
+
+   - name: Ensure service is started
+     become: true
+     service:
+       name: "{{ mariadb_service }}"
+       state: started
+       enabled: yes
+     tags: mariadb_service
+
+   - name: Install ~/.my.cnf
+     template:
+       src: home_my.cnf.j2
+       dest: "{{ mariadb_my_config }}"
+       mode: '0600'
+     tags: mariadb_my.cnf
+
+   - name: Update root password
+     become: true
+     mysql_user:
+       name: root
+       host: "{{ item }}"
+       password: "{{ mariadb_root_password }}"
+       state: present
+     with_items:
+       - "{{ ansible_hostname }}"
+       - 127.0.0.1
+       - ::1
+       - localhost
+     tags: mariadb_root_password_update
+
+   - name: MYSQL_USER | Remove all anonymous users
+     mysql_user: name='' host={{ item }} state=absent
+     with_items:
+       - "{{ ansible_hostname }}"
+       - 127.0.0.1
+       - ::1
+       - localhost
+     tags: mariadb_remove_anonymous_users
+
+   - name: MYSQL_DB | Remove the test database
+     mysql_db: name=test state=absent
+     tags: mariadb_remove_test_database
+
+   #- name: Install ~/.my.cnf
+   #  template:
+   #    src: home_my.cnf.j2
+   #    dest: "{{ mariadb_my_config }}"
+   #    mode: '0600'
+   #  tags: mariadb_my.cnf
+
+- hosts: masterMariadb
+  vars:
+     mariadb_service: rh-mariadb101-mariadb
+     mysql_gtid_domain_id: 1
+     mysql_server_id: "{{ ansible_default_ipv4.address | ipaddr('int') }}"
+     mysql_max_binlog_size: "100M"
+     mysql_expire_logs_days: "10"
+     mysql_vendor: 'mariadb'
+     mysql_replication_master: "{{ ansible_default_ipv4.address}}"
+     mariadb_root_password: Admin@123
+     mysql_replication_user:
+         name: repl
+         host: ""
+         password: lper
+         priv: '*.*:REPLICATION SLAVE,REPLICATION CLIENT'
+
+  tasks:
+
+   - name: Register master IP
+     #register: mysql_replication_master
+     set_fact: mysql_replication_master="{{ansible_default_ipv4.address}}"
+     register: mysql_replication_master
+
+   - name: MYSQL_VARIABLES | Get MySQL vendor
+     become: true
+     mysql_variables: login_password= "{{ mariadb_root_password }}" variable=version
+     register: vc
+     tags: mariadb_version
+
+   - name: SET_FACT | Server can use GTID
+     become: true
+     set_fact: mysql_gtid=true
+     when: >
+       ( mysql_vendor == 'mariadb' and vc.msg | version_compare('10.1.22', 'ge') )
+     tags: mariadb_gitd
+
+   - name: TEMPLATE | Deploy master configuration
+     become: true
+     template: >
+       src=master.cnf.j2
+       dest=/etc/opt/rh/rh-mariadb101/my.cnf.d/mariadb-server.cnf
+     notify: restart mysql
+
+   - name: Ensure replication user exists on master.
+     #become: true
+     mysql_user:
+       login_password: "{{ mariadb_root_password }}"
+       name: "{{ mysql_replication_user.name }}"
+       host: "{{ mysql_replication_user.host | default('%') }}"
+       #host: "{{ item }}"
+       password: "{{ mysql_replication_user.password }}"
+       priv: "{{ mysql_replication_user.priv | default('*.*:REPLICATION SLAVE,REPLICATION CLIENT') }}"
+       state: present
+     #with_items:
+     #  - "%"
+     #  - 127.0.0.1
+     #  - ::1
+     #  - localhost
+     tags: replication_user
+  handlers:
+   - name: restart mysql
+     become: true
+     service:
+       name: "{{ mariadb_service }}"
+       state: restarted
+
+- hosts: slaveMariadb
+  vars:
+     mysql_slave_import_data: true
+     mysql_slave_readonly: true
+     mariadb_service: rh-mariadb101-mariadb
+     mysql_gtid_domain_id: 1
+     mysql_server_id: "{{ ansible_default_ipv4.address | ipaddr('int') }}"
+     mysql_max_binlog_size: "100M"
+     mysql_expire_logs_days: "10"
+     mysql_vendor: 'mariadb'
+     #mysqlreplicationmaster: "{{ mysql_replication_master }}"
+     mysql_replication_user:
+         name: repl
+         host: ""
+         password: lper
+         priv: '*.*:REPLICATION SLAVE,REPLICATION CLIENT'
+
+  tasks:
+   - name: TEMPLATE | Deploy slave configuration
+     become: true
+     template: >
+       src=slave.cnf.j2
+       dest=/etc/opt/rh/rh-mariadb101/my.cnf.d/mariadb-server.cnf
+     notify: restart mysql
+
+  # - name: MYSQL_REPLICATION | Get slave status
+  #   mysql_replication: mode=getslave
+  #   ignore_errors: yes
+  #   register: slave_status
+
+   #- name: INCLUDE | Import data
+   #  include: import_data.yml
+   #  when: slave_status.failed is defined and mysql_slave_import_data
+   - name: Printing
+     debug: msg="{{mysql_replication_user.name}}"
+
+   - name: MasterIp is...
+     debug: msg="{{hostvars[groups['masterMariadb'][0]]['mysql_replication_master']}}"
+
+   - name: Check slave replication status.
+    # become: true
+     mysql_replication:
+       mode: getslave
+#       login_user: "{{ mysql_replication_user.name }}"
+#       login_password: "{{ mysql_replication_user.password }}"
+     ignore_errors: true
+     register: slave
+
+   - name: Check master replication status.
+     mysql_replication: mode=getmaster
+     delegate_to: "{{hostvars[groups['masterMariadb'][0]]['mysql_replication_master']}}"
+     register: master
+
+   - name: Stop Slave before configuration.
+     mysql_replication: mode=stopslave
+
+   - name: Configure replication on the slave.
+     mysql_replication:
+       mode: changemaster
+       master_host: "{{hostvars[groups['masterMariadb'][0]]['mysql_replication_master']}}"
+       master_user: "{{ mysql_replication_user.name }}"
+       master_password: "{{ mysql_replication_user.password }}"
+       master_log_file: "{{ master.File }}"
+       master_log_pos: "{{ master.Position }}"
+     ignore_errors: True
+
+ #  - name: Stop Slave.
+ #    mysql_replication: mode=stopslave
+
+   - name: Start Slave and Replication.
+     mysql_replication: mode=startslave
+
+  handlers:
+   - name: restart mysql
+     become: true
+     service:
+       name: "{{ mariadb_service }}"
+       state: restarted
+
+- hosts: mariadb
+  vars:
+     mariadb_service: rh-mariadb101-mariadb
+     mariadb_root_password: Admin@123
+     mariadb_databases:
+      - hive
+      - ranger
+      - ranger_audit
+      - oozie
+
+  tasks:
+   - name: Create the databases
+     become: true
+     mysql_db:
+      name: "{{ item }}"
+      state: present
+      login_password: "{{ mariadb_root_password }}"
+     with_items: "{{ mariadb_databases }}"
+
+   - name: Create the hive user and setting privileges
+     become: true
+     mysql_user:
+       login_password: "{{ mariadb_root_password }}"
+       name: hive
+       password: hive
+       priv: '*.*:ALL,GRANT'
+       host: "{{ item }}"
+       state: present
+     with_items:
+       - "localhost"
+       - "{{ ansible_fqdn }}"
+       - "%"
+
+   - name: Create the rangeradmin user and setting privileges
+     become: true
+     mysql_user:
+       login_password: "{{ mariadb_root_password }}"
+       name: rangeradmin
+       password: rangeradmin
+       priv: '*.*:ALL,GRANT'
+       host: "{{ item }}"
+       state: present
+     with_items:
+       - "localhost"
+       - "{{ ansible_fqdn }}"
+       - "%"
+
+   - name: Create the rangerlogger user and setting privileges
+     become: true
+     mysql_user:
+       login_password: "{{ mariadb_root_password }}"
+       name: rangerlogger
+       password: rangerlogger
+       priv: '*.*:ALL,GRANT'
+       host: "{{ item }}"
+       state: present
+     with_items:
+       - "localhost"
+       - "{{ ansible_fqdn }}"
+       - "%"
+
+   - name: Create the oozie user and setting privileges
+     become: true
+     mysql_user:
+       login_password: "{{ mariadb_root_password }}"
+       name: oozie
+       password: oozie
+       priv: '*.*:ALL,GRANT'
+       host: "{{ item }}"
+       state: present
+     with_items:
+       - "localhost"
+       - "{{ ansible_fqdn }}"
+       - "%"
+
+  handlers:
+  - name: restart mariadb
+    service:
+      name: rh-mariadb101-mariadb
+      state: restarted
